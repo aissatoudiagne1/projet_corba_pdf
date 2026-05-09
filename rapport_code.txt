@@ -1,0 +1,263 @@
+=== PDFService.idl ===
+module pdf {
+    interface PDFService {
+        string fusionnerPDF(in string fichier1, in string fichier2, in string sortie);
+        string decouperPDF(in string fichier, in long pageDebut, in long pageFin, in string sortie);
+        string extrairePages(in string fichier, in long page, in string sortie);
+        string supprimerPage(in string fichier, in long page, in string sortie);
+        string extraireTexte(in string fichier);
+        string pdfVersImage(in string fichier, in string dossierSortie);
+        string creerPDF(in string texte, in string sortie);
+    };
+};
+
+=== PDFServiceImpl.java ===
+package pdf;
+
+import org.apache.pdfbox.multipdf.PDFMergerUtility;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.text.PDFTextStripper;
+
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+
+public class PDFServiceImpl extends PDFServicePOA {
+
+    @Override
+    public String fusionnerPDF(String fichier1, String fichier2, String sortie) {
+        try {
+            PDFMergerUtility merger = new PDFMergerUtility();
+            merger.addSource(new File(fichier1));
+            merger.addSource(new File(fichier2));
+            merger.setDestinationFileName(sortie);
+            merger.mergeDocuments(null);
+            return "OK: PDF fusionné -> " + sortie;
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public String decouperPDF(String fichier, int pageDebut, int pageFin, String sortie) {
+        try (PDDocument doc = PDDocument.load(new File(fichier));
+             PDDocument resultat = new PDDocument()) {
+            for (int i = pageDebut - 1; i < pageFin && i < doc.getNumberOfPages(); i++) {
+                resultat.addPage(doc.getPage(i));
+            }
+            resultat.save(sortie);
+            return "OK: PDF découpé pages " + pageDebut + "-" + pageFin + " -> " + sortie;
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public String extrairePages(String fichier, int page, String sortie) {
+        try (PDDocument doc = PDDocument.load(new File(fichier));
+             PDDocument resultat = new PDDocument()) {
+            resultat.addPage(doc.getPage(page - 1));
+            resultat.save(sortie);
+            return "OK: Page " + page + " extraite -> " + sortie;
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public String supprimerPage(String fichier, int page, String sortie) {
+        try (PDDocument doc = PDDocument.load(new File(fichier))) {
+            doc.removePage(page - 1);
+            doc.save(sortie);
+            return "OK: Page " + page + " supprimée -> " + sortie;
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public String extraireTexte(String fichier) {
+        try (PDDocument doc = PDDocument.load(new File(fichier))) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            return stripper.getText(doc);
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public String pdfVersImage(String fichier, String dossierSortie) {
+        try (PDDocument doc = PDDocument.load(new File(fichier))) {
+            PDFRenderer renderer = new PDFRenderer(doc);
+            new File(dossierSortie).mkdirs();
+            for (int i = 0; i < doc.getNumberOfPages(); i++) {
+                BufferedImage img = renderer.renderImageWithDPI(i, 150);
+                ImageIO.write(img, "PNG", new File(dossierSortie + "/page_" + (i+1) + ".png"));
+            }
+            return "OK: Images sauvées dans " + dossierSortie;
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public String creerPDF(String texte, String sortie) {
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage();
+            doc.addPage(page);
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                cs.beginText();
+                cs.setFont(PDType1Font.HELVETICA, 12);
+                cs.newLineAtOffset(50, 700);
+                cs.showText(texte);
+                cs.endText();
+            }
+            doc.save(sortie);
+            return "OK: PDF créé -> " + sortie;
+        } catch (IOException e) {
+            return "ERREUR: " + e.getMessage();
+        }
+    }
+}
+
+=== Serveur.java ===
+package pdf;
+
+import org.omg.CORBA.*;
+import org.omg.CosNaming.*;
+import org.omg.CosNaming.NamingContextPackage.*;
+import org.omg.PortableServer.*;
+
+public class Serveur {
+    public static void main(String[] args) {
+        try {
+            ORB orb = ORB.init(args, null);
+            POA rootPOA = POAHelper.narrow(orb.resolve_initial_references("RootPOA"));
+            rootPOA.the_POAManager().activate();
+
+            PDFServiceImpl impl = new PDFServiceImpl();
+            org.omg.CORBA.Object ref = rootPOA.servant_to_reference(impl);
+            PDFService service = PDFServiceHelper.narrow(ref);
+
+            org.omg.CORBA.Object namingRef = orb.resolve_initial_references("NameService");
+            NamingContextExt namingCtx = NamingContextExtHelper.narrow(namingRef);
+            NameComponent[] path = namingCtx.to_name("PDFService");
+            namingCtx.rebind(path, service);
+
+            System.out.println("Serveur CORBA PDFService démarré...");
+            orb.run();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+=== Client.java ===
+package pdf;
+
+import org.omg.CORBA.*;
+import org.omg.CosNaming.*;
+
+import java.util.Scanner;
+
+public class Client {
+    public static void main(String[] args) {
+        try {
+            ORB orb = ORB.init(args, null);
+            org.omg.CORBA.Object namingRef = orb.resolve_initial_references("NameService");
+            NamingContextExt namingCtx = NamingContextExtHelper.narrow(namingRef);
+            PDFService service = PDFServiceHelper.narrow(namingCtx.resolve_str("PDFService"));
+
+            Scanner sc = new Scanner(System.in);
+            System.out.println("=== Client CORBA PDFService ===");
+            System.out.println("1. Créer un PDF");
+            System.out.println("2. Extraire le texte d'un PDF");
+            System.out.println("3. Fusionner deux PDFs");
+            System.out.println("4. Découper un PDF");
+            System.out.println("5. Extraire une page");
+            System.out.println("6. Supprimer une page");
+            System.out.println("7. Convertir PDF en images");
+            System.out.print("Votre choix : ");
+            int choix = sc.nextInt();
+            sc.nextLine();
+
+            String resultat = "";
+
+            switch (choix) {
+                case 1:
+                    System.out.print("Texte à écrire : ");
+                    String texte = sc.nextLine();
+                    System.out.print("Nom du fichier de sortie (ex: sortie.pdf) : ");
+                    String sortie1 = sc.nextLine();
+                    resultat = service.creerPDF(texte, sortie1);
+                    break;
+                case 2:
+                    System.out.print("Chemin du PDF : ");
+                    String f2 = sc.nextLine();
+                    resultat = service.extraireTexte(f2);
+                    break;
+                case 3:
+                    System.out.print("Premier PDF : ");
+                    String f3a = sc.nextLine();
+                    System.out.print("Deuxième PDF : ");
+                    String f3b = sc.nextLine();
+                    System.out.print("Fichier de sortie : ");
+                    String s3 = sc.nextLine();
+                    resultat = service.fusionnerPDF(f3a, f3b, s3);
+                    break;
+                case 4:
+                    System.out.print("Chemin du PDF : ");
+                    String f4 = sc.nextLine();
+                    System.out.print("Page début : ");
+                    int pd = sc.nextInt();
+                    System.out.print("Page fin : ");
+                    int pf = sc.nextInt();
+                    sc.nextLine();
+                    System.out.print("Fichier de sortie : ");
+                    String s4 = sc.nextLine();
+                    resultat = service.decouperPDF(f4, pd, pf, s4);
+                    break;
+                case 5:
+                    System.out.print("Chemin du PDF : ");
+                    String f5 = sc.nextLine();
+                    System.out.print("Numéro de page : ");
+                    int p5 = sc.nextInt();
+                    sc.nextLine();
+                    System.out.print("Fichier de sortie : ");
+                    String s5 = sc.nextLine();
+                    resultat = service.extrairePages(f5, p5, s5);
+                    break;
+                case 6:
+                    System.out.print("Chemin du PDF : ");
+                    String f6 = sc.nextLine();
+                    System.out.print("Numéro de page à supprimer : ");
+                    int p6 = sc.nextInt();
+                    sc.nextLine();
+                    System.out.print("Fichier de sortie : ");
+                    String s6 = sc.nextLine();
+                    resultat = service.supprimerPage(f6, p6, s6);
+                    break;
+                case 7:
+                    System.out.print("Chemin du PDF : ");
+                    String f7 = sc.nextLine();
+                    System.out.print("Dossier de sortie pour les images : ");
+                    String s7 = sc.nextLine();
+                    resultat = service.pdfVersImage(f7, s7);
+                    break;
+                default:
+                    resultat = "Choix invalide.";
+            }
+
+            System.out.println("\nRésultat : " + resultat);
+            sc.close();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
